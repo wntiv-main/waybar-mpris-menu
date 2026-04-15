@@ -1,16 +1,10 @@
 use std::{cell::RefCell, collections::HashMap, rc::{Rc, Weak}};
 
-use gdk::glib::clone;
+use gdk::glib::{SignalHandlerId, clone};
 use soup::prelude::*;
 use waybar_cffi::{
 	Module, gtk::{
-		Adjustment, Box as GtkBox, Button, Image, Label, Scale, Window,
-		gdk::{AnchorHints, EventMask, Rectangle},
-		gdk_pixbuf::Pixbuf,
-		gio::{Cancellable, DBusCallFlags, DBusConnection, DBusSignalFlags, MemoryInputStream, bus_get_sync},
-		glib::{self, Cast, MainContext, Variant, VariantDict, VariantTy, clone::Downgrade, variant::ObjectPath},
-		prelude::WidgetExtManual,
-		traits::{AdjustmentExt, ButtonExt, ContainerExt, GtkWindowExt, ImageExt, LabelExt, RangeExt, ScaleExt, WidgetExt}},
+		Adjustment, Box as GtkBox, Button, Image, Label, Scale, ToggleButton, Window, gdk::{AnchorHints, EventMask, Rectangle}, gdk_pixbuf::Pixbuf, gio::{Cancellable, DBusCallFlags, DBusConnection, DBusSignalFlags, MemoryInputStream, bus_get_sync}, glib::{self, Cast, MainContext, Variant, VariantDict, VariantTy, clone::Downgrade, variant::ObjectPath}, prelude::WidgetExtManual, traits::{AdjustmentExt, ButtonExt, ContainerExt, GtkWindowExt, ImageExt, LabelExt, RangeExt, ScaleExt, ToggleButtonExt, WidgetExt}},
 		serde, waybar_module
 };
 
@@ -64,6 +58,7 @@ impl TryFrom<&str> for PlayState {
 	}
 }
 
+#[derive(PartialEq, Eq, Clone, Copy)]
 enum LoopState {
 	None,
 	LoopPlaylist,
@@ -85,6 +80,10 @@ impl LoopState {
 			Self::LoopPlaylist => "media-playlist-repeat",
 			Self::LoopSingle => "media-playlist-repeat-song",
 		}
+	}
+
+	fn is_active(&self) -> bool {
+		*self != Self::None
 	}
 }
 
@@ -111,10 +110,7 @@ impl TryFrom<&str> for LoopState {
 	}
 }
 
-struct PlayerWidget {
-	dbus_conn: Weak<RefCell<DBusConnection>>,
-	name: String,
-	
+struct PlayerData {
 	current_track: Option<ObjectPath>,
 	art_url: Option<String>,
 
@@ -141,6 +137,16 @@ struct PlayerWidget {
 	is_dragging_volume: bool,
 	is_dragging_rate: bool,
 
+	loop_sig_id: Option<SignalHandlerId>,
+	shuf_sig_id: Option<SignalHandlerId>,
+}
+
+struct PlayerWidget {
+	dbus_conn: Weak<RefCell<DBusConnection>>,
+	name: String,
+	
+	data: Rc<RefCell<PlayerData>>,
+
 	playback_adj: Adjustment,
 	volume_adj: Adjustment,
 	rate_adj: Adjustment,
@@ -149,11 +155,11 @@ struct PlayerWidget {
 	title: Label,
 	album_artist: Label,
 	album_cover: Rc<RefCell<Image>>,
-	shuf: Button,
+	shuf: ToggleButton,
 	prev: Button,
 	play_pause: Button,
 	next: Button,
-	loop_: Button,
+	loop_: ToggleButton,
 	playback: Scale,
 	volume_ctl: Scale,
 	rate_ctl: Scale,
@@ -180,6 +186,8 @@ impl PlayerWidget {
 			.map(|v| { v.get::<String>()?.as_str().try_into().ok() }).flatten().unwrap_or(PlayState::Stopped);
 		let loop_state = props.lookup_value("LoopStatus", Some(VariantTy::STRING))
 			.map(|v| { v.get::<String>()?.as_str().try_into().ok() }).flatten().unwrap_or(LoopState::None);
+		let shuffle_state = props.lookup_value("Shuffle", Some(VariantTy::BOOLEAN))
+			.map_or(false, |v| { v.get::<bool>().unwrap_or(false) });
 
 		let min_rate = props.lookup_value("MinimumRate", Some(VariantTy::DOUBLE))
 			.map_or(1., |v| { v.get::<f64>().unwrap_or(1.) });
@@ -205,8 +213,16 @@ impl PlayerWidget {
 		let prev = Button::from_icon_name(Some("media-skip-backward"), waybar_cffi::gtk::IconSize::Button);
 		let play_pause = Button::from_icon_name(Some(play_state.inverse().icon_name()), waybar_cffi::gtk::IconSize::Button);
 		let next = Button::from_icon_name(Some("media-skip-forward"), waybar_cffi::gtk::IconSize::Button);
-		let shuf = Button::from_icon_name(Some("media-playlist-shuffle"), waybar_cffi::gtk::IconSize::Button);
-		let loop_ = Button::from_icon_name(Some(loop_state.icon_name()), waybar_cffi::gtk::IconSize::Button);
+
+		let shuf_icon = Image::from_icon_name(Some("media-playlist-shuffle"), waybar_cffi::gtk::IconSize::Button);
+		let shuf = ToggleButton::new();
+		shuf.set_image(Some(&shuf_icon));
+		shuf.set_active(shuffle_state);
+
+		let loop_icon = Image::from_icon_name(Some(loop_state.icon_name()), waybar_cffi::gtk::IconSize::Button);
+		let loop_ = ToggleButton::new();
+		loop_.set_image(Some(&loop_icon));
+		loop_.set_active(loop_state.is_active());
 
 		controls.add(&shuf);
 		controls.add(&prev);
@@ -239,49 +255,53 @@ impl PlayerWidget {
 		root.add(&playback);
 
 		root.show_all();
-		let mut result = PlayerWidget {
+		let result = PlayerWidget {
 			dbus_conn: conn.downgrade(),
 			name: inst_name,
 
-			current_track: meta_props.as_ref()
-				.map(|m| { m.lookup_value("mpris:trackid", Some(VariantTy::OBJECT_PATH)) }).flatten()
-				.map(|v| { v.get::<ObjectPath>() }).flatten(),
-			art_url: None, // Init later to set art properly
+			data: Rc::new(RefCell::new(PlayerData {
+				current_track: meta_props.as_ref()
+					.map(|m| { m.lookup_value("mpris:trackid", Some(VariantTy::OBJECT_PATH)) }).flatten()
+					.map(|v| { v.get::<ObjectPath>() }).flatten(),
+				art_url: None, // Init later to set art properly
 
-			position_base: 0,
-			clock_needs_aligned: true,
+				position_base: 0,
+				clock_needs_aligned: true,
 
-			is_dragging_playback: false,
-			is_dragging_volume: false,
-			is_dragging_rate: false,
+				is_dragging_playback: false,
+				is_dragging_volume: false,
+				is_dragging_rate: false,
 
-			play_state,
-			loop_state,
-			shuffle_state: props.lookup_value("Shuffle", Some(VariantTy::BOOLEAN))
-				.map_or(false, |v| { v.get::<bool>().unwrap_or(false) }),
+				play_state,
+				loop_state,
+				shuffle_state,
 
-			rate,
+				rate,
+
+				has_loop: props.contains("LoopStatus"),
+				has_shuf: props.contains("Shuffle"),
+
+				loop_sig_id: None,
+				shuf_sig_id: None,
+				
+				can_control: props.lookup_value("CanControl", Some(VariantTy::BOOLEAN))
+					.map_or(false, |v| { v.get::<bool>().unwrap_or(false) }),
+				can_seek: props.lookup_value("CanSeek", Some(VariantTy::BOOLEAN))
+					.map_or(false, |v| { v.get::<bool>().unwrap_or(false) }),
+				can_play: props.lookup_value("CanPlay", Some(VariantTy::BOOLEAN))
+					.map_or(false, |v| { v.get::<bool>().unwrap_or(false) }),
+				can_pause: props.lookup_value("CanPause", Some(VariantTy::BOOLEAN))
+					.map_or(false, |v| { v.get::<bool>().unwrap_or(false) }),
+				can_go_next: props.lookup_value("CanGoNext", Some(VariantTy::BOOLEAN))
+					.map_or(false, |v| { v.get::<bool>().unwrap_or(false) }),
+				can_go_prev: props.lookup_value("CanGoPrevious", Some(VariantTy::BOOLEAN))
+					.map_or(false, |v| { v.get::<bool>().unwrap_or(false) }),
+			})),
 
 			playback_adj,
 			volume_adj,
 			rate_adj,
-
-			has_loop: props.contains("LoopStatus"),
-			has_shuf: props.contains("Shuffle"),
-
-			can_control: props.lookup_value("CanControl", Some(VariantTy::BOOLEAN))
-				.map_or(false, |v| { v.get::<bool>().unwrap_or(false) }),
-			can_seek: props.lookup_value("CanSeek", Some(VariantTy::BOOLEAN))
-				.map_or(false, |v| { v.get::<bool>().unwrap_or(false) }),
-			can_play: props.lookup_value("CanPlay", Some(VariantTy::BOOLEAN))
-				.map_or(false, |v| { v.get::<bool>().unwrap_or(false) }),
-			can_pause: props.lookup_value("CanPause", Some(VariantTy::BOOLEAN))
-				.map_or(false, |v| { v.get::<bool>().unwrap_or(false) }),
-			can_go_next: props.lookup_value("CanGoNext", Some(VariantTy::BOOLEAN))
-				.map_or(false, |v| { v.get::<bool>().unwrap_or(false) }),
-			can_go_prev: props.lookup_value("CanGoPrevious", Some(VariantTy::BOOLEAN))
-				.map_or(false, |v| { v.get::<bool>().unwrap_or(false) }),
-
+			
 			root,
 			title,
 			album_artist,
@@ -300,20 +320,21 @@ impl PlayerWidget {
 	}
 
 	fn update_sensitivity(&self) {
-		self.play_pause.set_sensitive(self.can_control && (
-			if self.play_state == PlayState::Playing {self.can_pause} else {self.can_play}));
-		self.prev.set_sensitive(self.can_control && self.can_go_prev);
-		self.next.set_sensitive(self.can_control && self.can_go_next);
-		self.loop_.set_sensitive(self.can_control && self.has_loop);
-		self.shuf.set_sensitive(self.can_control && self.has_shuf);
-		self.playback.set_sensitive(self.can_control && self.can_seek);
+		let data = self.data.borrow();
+		self.play_pause.set_sensitive(data.can_control && (
+			if data.play_state == PlayState::Playing {data.can_pause} else {data.can_play}));
+		self.prev.set_sensitive(data.can_control && data.can_go_prev);
+		self.next.set_sensitive(data.can_control && data.can_go_next);
+		self.loop_.set_sensitive(data.can_control && data.has_loop);
+		self.shuf.set_sensitive(data.can_control && data.has_shuf);
+		self.playback.set_sensitive(data.can_control && data.can_seek);
 	}
 
-	fn update_metadata(&mut self, meta_props: VariantDict) {
-		self.clock_needs_aligned = true;
+	fn update_metadata(&self, meta_props: VariantDict) {
+		self.data.borrow_mut().clock_needs_aligned = true;
 		if let Some(trackid) = meta_props.lookup_value("mpris:trackid", Some(VariantTy::OBJECT_PATH))
 				.map(|v| { v.get::<ObjectPath>() }).flatten() {
-			self.current_track.replace(trackid);
+			self.data.borrow_mut().current_track.replace(trackid);
 		}
 
 		if let Some(title) = meta_props.lookup_value("xesam:title", Some(&VariantTy::STRING))
@@ -343,90 +364,115 @@ impl PlayerWidget {
 
 		if let Some(art_url) = meta_props.lookup_value("mpris:artUrl", Some(&VariantTy::STRING))
 				.map(|v| { v.get::<String>().expect("url type is string") }) {
-			if self.art_url.as_ref().is_none_or(|url| { art_url != *url }) {
-				self.art_url = Some(art_url.clone());
+			if self.data.borrow().art_url.as_ref().is_none_or(|url| { art_url != *url }) {
+				self.data.borrow_mut().art_url = Some(art_url.clone());
 				let _album_cover = self.album_cover.clone();
 				MainContext::default().spawn_local(Self::set_art(_album_cover, art_url));
 			}
 		}
 	}
 
-	fn update_seek(&mut self, position: i64) {
+	fn update_seek(&self, position: i64) {
+		let mut data = self.data.borrow_mut();
 		if let Some(clock) = self.playback.frame_clock() {
-			self.position_base = clock.frame_time() - ((position as f64 / self.rate) as i64);
+			data.position_base = clock.frame_time() - ((position as f64 / data.rate) as i64);
 		} else {
-			self.clock_needs_aligned = true;
+			data.clock_needs_aligned = true;
 		}
 	}
 
-	fn update_prop(&mut self, prop: &str, value: Variant) {
+	fn update_prop(&self, prop: &str, value: Variant) {
 		match prop {
 			"Metadata" => {
 				let meta_props = VariantDict::from(value);
 				self.update_metadata(meta_props);
 			}
 			"CanControl" => {
-				self.can_control = value.get::<bool>().unwrap_or(false);
+				self.data.borrow_mut().can_control = value.get::<bool>().unwrap_or(false);
 				self.update_sensitivity();
 			}
 			"CanSeek" => {
-				self.can_seek = value.get::<bool>().unwrap_or(false);
-				if self.can_control {
-					self.playback.set_sensitive(self.can_control && self.can_seek);
+				self.data.borrow_mut().can_seek = value.get::<bool>().unwrap_or(false);
+				let data = self.data.borrow();
+				if data.can_control {
+					self.playback.set_sensitive(data.can_control && data.can_seek);
 				}
 			}
 			"CanPause" => {
-				self.can_pause = value.get::<bool>().unwrap_or(false);
-				if self.play_state == PlayState::Playing && self.can_control {
-					self.play_pause.set_sensitive(self.can_pause);
+				self.data.borrow_mut().can_pause = value.get::<bool>().unwrap_or(false);
+				let data = self.data.borrow();
+				if data.play_state == PlayState::Playing && data.can_control {
+					self.play_pause.set_sensitive(data.can_pause);
 				}
 			}
 			"CanPlay" => {
-				self.can_play = value.get::<bool>().unwrap_or(false);
-				if self.play_state != PlayState::Playing && self.can_control {
-					self.play_pause.set_sensitive(self.can_play);
+				self.data.borrow_mut().can_play = value.get::<bool>().unwrap_or(false);
+				let data = self.data.borrow();
+				if data.play_state != PlayState::Playing && data.can_control {
+					self.play_pause.set_sensitive(data.can_play);
 				}
 			}
 			"CanGoNext" => {
-				self.can_go_next = value.get::<bool>().unwrap_or(false);
-				if self.can_control {
-					self.next.set_sensitive(self.can_go_next);
+				self.data.borrow_mut().can_go_next = value.get::<bool>().unwrap_or(false);
+				let data = self.data.borrow();
+				if data.can_control {
+					self.next.set_sensitive(data.can_go_next);
 				}
 			}
 			"CanGoPrevious" => {
-				self.can_go_prev = value.get::<bool>().unwrap_or(false);
-				if self.can_control {
-					self.prev.set_sensitive(self.can_go_prev);
+				self.data.borrow_mut().can_go_prev = value.get::<bool>().unwrap_or(false);
+				let data = self.data.borrow();
+				if data.can_control {
+					self.prev.set_sensitive(data.can_go_prev);
 				}
 			}
 			"Shuffle" => {
-				if self.can_control && !self.has_shuf {
+				if { let data = self.data.borrow();
+						data.can_control && !data.has_shuf } {
 					self.shuf.set_sensitive(true);
 				}
-				self.has_shuf = true;
-				self.shuffle_state = value.get::<bool>().unwrap_or(false);
-				// TODO: update button
+				{
+					let mut data = self.data.borrow_mut();
+					data.has_shuf = true;
+					data.shuffle_state = value.get::<bool>().unwrap_or(false);
+				}
+				let data = self.data.borrow();
+				self.shuf.block_signal(data.shuf_sig_id.as_ref().unwrap());
+				self.shuf.set_active(data.shuffle_state);
+				self.shuf.block_signal(data.shuf_sig_id.as_ref().unwrap());
 			}
 			"LoopStatus" => {
-				if self.can_control && !self.has_loop {
+				if { let data = self.data.borrow();
+						data.can_control && !data.has_loop } {
 					self.loop_.set_sensitive(true);
 				}
-				self.has_loop = true;
-				self.loop_state = value.get::<String>().map(|s| { LoopState::try_from(s.as_str()).ok() })
-					.flatten().unwrap_or(LoopState::None);
-				let new_icon = Image::from_icon_name(Some(self.loop_state.icon_name()), waybar_cffi::gtk::IconSize::Button);
+				{
+					let mut data = self.data.borrow_mut();
+					data.has_loop = true;
+					data.loop_state = value.get::<String>().map(|s| { LoopState::try_from(s.as_str()).ok() })
+						.flatten().unwrap_or(LoopState::None);
+				}
+				let data = self.data.borrow();
+				let new_icon = Image::from_icon_name(Some(data.loop_state.icon_name()), waybar_cffi::gtk::IconSize::Button);
 				self.loop_.set_image(Some(&new_icon));
-				// TODO: update btn for no loop
+				
+				self.loop_.block_signal(data.loop_sig_id.as_ref().unwrap());
+				self.loop_.set_active(data.loop_state.is_active());
+				self.loop_.unblock_signal(data.loop_sig_id.as_ref().unwrap());
 			}
 			"PlaybackStatus" => {
-				self.play_state = value.get::<String>().map(|s| { PlayState::try_from(s.as_str()).ok() })
-					.flatten().unwrap_or(PlayState::Stopped);
-				let new_icon = Image::from_icon_name(Some(self.play_state.inverse().icon_name()), waybar_cffi::gtk::IconSize::Button);
-				self.play_pause.set_image(Some(&new_icon));
-				if self.can_control {
-					self.play_pause.set_sensitive(if self.play_state == PlayState::Playing {self.can_pause} else {self.can_play});
+				{
+					let mut data = self.data.borrow_mut();
+					data.play_state = value.get::<String>().map(|s| { PlayState::try_from(s.as_str()).ok() })
+						.flatten().unwrap_or(PlayState::Stopped);
+					data.clock_needs_aligned = true;
 				}
-				self.clock_needs_aligned = true;
+				let data = self.data.borrow();
+				let new_icon = Image::from_icon_name(Some(data.play_state.inverse().icon_name()), waybar_cffi::gtk::IconSize::Button);
+				self.play_pause.set_image(Some(&new_icon));
+				if data.can_control {
+					self.play_pause.set_sensitive(if data.play_state == PlayState::Playing {data.can_pause} else {data.can_play});
+				}
 			}
 			"MinimumRate" => {
 				let min_rate = value.get::<f64>().unwrap_or(1.);
@@ -437,15 +483,19 @@ impl PlayerWidget {
 				self.rate_adj.set_upper(max_rate);
 			}
 			"Rate" => {
-				self.rate = value.get::<f64>().unwrap_or(1.);
-				if !self.is_dragging_rate {
-					self.rate_adj.set_value(self.rate);
+				{
+					let mut data = self.data.borrow_mut();
+					data.rate = value.get::<f64>().unwrap_or(1.);
+					data.clock_needs_aligned = true;
 				}
-				self.clock_needs_aligned = true;
+				let data = self.data.borrow();
+				if !data.is_dragging_rate {
+					self.rate_adj.set_value(data.rate);
+				}
 			}
 			"Volume" => {
 				let volume = value.get::<f64>().unwrap_or(1.);
-				if !self.is_dragging_volume {
+				if !self.data.borrow().is_dragging_volume {
 					self.volume_adj.set_value(volume);
 				}
 			}
@@ -534,92 +584,99 @@ impl PlayerWidget {
 		}).flatten()
 	}
 
-	fn initialize(self) -> Rc<RefCell<Self>> {
-		let s = Rc::new(RefCell::new(self));
-		{
-			let _s = s.borrow();
-			_s.prev.connect_clicked(clone!(@weak s => move |_| {
-				let s = s.borrow();
-				s.call_fn("Previous", None);
-			}));
-			_s.play_pause.connect_clicked(clone!(@weak s => move |_| {
-				let s = s.borrow();
-				s.call_fn("PlayPause", None);
-			}));
-			_s.next.connect_clicked(clone!(@weak s => move |_| {
-				let s = s.borrow();
-				s.call_fn("Next", None);
-			}));
-			_s.shuf.connect_clicked(clone!(@weak s => move |_| {
-				let s = s.borrow();
-				s.set_prop("Shuffle", &Variant::from(!s.shuffle_state));
-			}));
-			_s.loop_.connect_clicked(clone!(@weak s => move |_| {
-				let s = s.borrow();
-				let next_state = Into::<&str>::into(s.loop_state.next());
-				s.set_prop("LoopStatus", &Variant::from(next_state));
-			}));
-			// rate control
-			_s.rate_ctl.connect_change_value(clone!(@weak s => @default-return gdk::glib::Propagation::Proceed, move |_slf, _st, value| {
-				s.borrow().set_prop("Rate", &Variant::from(value.max(0.01)));
-				gdk::glib::Propagation::Proceed
-			}));
-			_s.rate_ctl.connect_button_press_event(clone!(@weak s => @default-return gdk::glib::Propagation::Proceed, move |_slf, _e| {
-				s.borrow_mut().is_dragging_rate = true;
-				gdk::glib::Propagation::Proceed
-			}));
-			_s.rate_ctl.connect_button_release_event(clone!(@weak s => @default-return gdk::glib::Propagation::Proceed, move |_slf, _e| {
-				s.borrow_mut().is_dragging_rate = false;
-				gdk::glib::Propagation::Proceed
-			}));
-			// volume control
-			_s.volume_ctl.connect_change_value(clone!(@weak s => @default-return gdk::glib::Propagation::Proceed, move |_slf, _st, value| {
-				s.borrow().set_prop("Volume", &Variant::from(value));
-				gdk::glib::Propagation::Proceed
-			}));
-			_s.volume_ctl.connect_button_press_event(clone!(@weak s => @default-return gdk::glib::Propagation::Proceed, move |_slf, _e| {
-				s.borrow_mut().is_dragging_volume = true;
-				gdk::glib::Propagation::Proceed
-			}));
-			_s.volume_ctl.connect_button_release_event(clone!(@weak s => @default-return gdk::glib::Propagation::Proceed, move |_slf, _e| {
-				s.borrow_mut().is_dragging_volume = false;
-				gdk::glib::Propagation::Proceed
-			}));
-			// seek control
-			_s.playback.connect_change_value(clone!(@weak s => @default-return gdk::glib::Propagation::Proceed, move |_slf, _st, value| {
-				let s = s.borrow();
-				let position = value as i64;
-				if let Some(trackid) = &s.current_track {
-					s.call_fn("SetPosition", Some(&Variant::from((trackid, position))));
-				}
-				gdk::glib::Propagation::Proceed
-			}));
-			_s.playback.connect_button_press_event(clone!(@weak s => @default-return gdk::glib::Propagation::Proceed, move |_slf, _e| {
-				s.borrow_mut().is_dragging_playback = true;
-				gdk::glib::Propagation::Proceed
-			}));
-			_s.playback.connect_button_release_event(clone!(@weak s => @default-return gdk::glib::Propagation::Proceed, move |_slf, _e| {
-				s.borrow_mut().is_dragging_playback = false;
-				gdk::glib::Propagation::Proceed
-			}));
-			_s.playback.add_tick_callback(clone!(@weak s => @default-return glib::ControlFlow::Continue, move |_pb, fc| {
-				let mut _s = s.borrow_mut();
-				if _s.is_dragging_playback || _s.play_state != PlayState::Playing { return glib::ControlFlow::Continue; }
+	fn initialize(self) -> Rc<Self> {
+		let s = Rc::new(self);
+
+		s.prev.connect_clicked(clone!(@weak s => move |_| {
+			s.call_fn("Previous", None);
+		}));
+		s.play_pause.connect_clicked(clone!(@weak s => move |_| {
+			s.call_fn("PlayPause", None);
+		}));
+		s.next.connect_clicked(clone!(@weak s => move |_| {
+			s.call_fn("Next", None);
+		}));
+		s.data.borrow_mut().shuf_sig_id = Some(s.shuf.connect_clicked(clone!(@weak s => move |slf| {
+			let shuffle_state = s.data.borrow().shuffle_state;
+
+			slf.block_signal(s.data.borrow().shuf_sig_id.as_ref().unwrap());
+			slf.set_active(shuffle_state); // reset state until change confirmed
+			slf.unblock_signal(s.data.borrow().shuf_sig_id.as_ref().unwrap());
+
+			s.set_prop("Shuffle", &Variant::from(!shuffle_state));
+		})));
+		s.data.borrow_mut().loop_sig_id = Some(s.loop_.connect_clicked(clone!(@weak s => move |slf| {
+			let loop_state = &s.data.borrow().loop_state;
+
+			slf.block_signal(s.data.borrow().loop_sig_id.as_ref().unwrap());
+			slf.set_active(loop_state.is_active()); // reset state until change confirmed
+			slf.unblock_signal(s.data.borrow().loop_sig_id.as_ref().unwrap());
+
+			let next_state = Into::<&str>::into(loop_state.next());
+			s.set_prop("LoopStatus", &Variant::from(next_state));
+		})));
+		// rate control
+		s.rate_ctl.connect_change_value(clone!(@weak s => @default-return gdk::glib::Propagation::Proceed, move |_slf, _st, value| {
+			s.set_prop("Rate", &Variant::from(value.max(0.01)));
+			gdk::glib::Propagation::Proceed
+		}));
+		s.rate_ctl.connect_button_press_event(clone!(@weak s => @default-return gdk::glib::Propagation::Proceed, move |_slf, _e| {
+			s.data.borrow_mut().is_dragging_rate = true;
+			gdk::glib::Propagation::Proceed
+		}));
+		s.rate_ctl.connect_button_release_event(clone!(@weak s => @default-return gdk::glib::Propagation::Proceed, move |_slf, _e| {
+			s.data.borrow_mut().is_dragging_rate = false;
+			gdk::glib::Propagation::Proceed
+		}));
+		// volume control
+		s.volume_ctl.connect_change_value(clone!(@weak s => @default-return gdk::glib::Propagation::Proceed, move |_slf, _st, value| {
+			s.set_prop("Volume", &Variant::from(value));
+			gdk::glib::Propagation::Proceed
+		}));
+		s.volume_ctl.connect_button_press_event(clone!(@weak s => @default-return gdk::glib::Propagation::Proceed, move |_slf, _e| {
+			s.data.borrow_mut().is_dragging_volume = true;
+			gdk::glib::Propagation::Proceed
+		}));
+		s.volume_ctl.connect_button_release_event(clone!(@weak s => @default-return gdk::glib::Propagation::Proceed, move |_slf, _e| {
+			s.data.borrow_mut().is_dragging_volume = false;
+			gdk::glib::Propagation::Proceed
+		}));
+		// seek control
+		s.playback.connect_change_value(clone!(@weak s => @default-return gdk::glib::Propagation::Proceed, move |_slf, _st, value| {
+			let position = value as i64;
+			if let Some(trackid) = &s.data.borrow().current_track {
+				s.call_fn("SetPosition", Some(&Variant::from((trackid, position))));
+			}
+			gdk::glib::Propagation::Proceed
+		}));
+		s.playback.connect_button_press_event(clone!(@weak s => @default-return gdk::glib::Propagation::Proceed, move |_slf, _e| {
+			s.data.borrow_mut().is_dragging_playback = true;
+			gdk::glib::Propagation::Proceed
+		}));
+		s.playback.connect_button_release_event(clone!(@weak s => @default-return gdk::glib::Propagation::Proceed, move |_slf, _e| {
+			s.data.borrow_mut().is_dragging_playback = false;
+			gdk::glib::Propagation::Proceed
+		}));
+		s.playback.add_tick_callback(clone!(@weak s => @default-return glib::ControlFlow::Continue, move |_pb, fc| {
+			let rate = s.data.borrow().rate;
+			let position = {
+				let mut data = s.data.borrow_mut();
+				if data.is_dragging_playback || data.play_state != PlayState::Playing { return glib::ControlFlow::Continue; }
 				let now = fc.frame_time();
-				let position = if _s.clock_needs_aligned {
-					let position = _s.get_prop("Position")
+				if data.clock_needs_aligned {
+					let position = s.get_prop("Position")
 						.map(|v| { v.get::<i64>() })
 						.flatten().unwrap_or(0);
-					_s.position_base = now - ((position as f64 / _s.rate) as i64);
-					_s.clock_needs_aligned = false;
+					data.position_base = now - ((position as f64 / rate) as i64);
+					data.clock_needs_aligned = false;
 					position
 				} else {
-					now - _s.position_base
-				};
-				_s.playback_adj.set_value(position as f64 * _s.rate);
-				glib::ControlFlow::Continue
-			}));
-		}
+					now - data.position_base
+				}
+			};
+			s.playback_adj.set_value(position as f64 * rate);
+			glib::ControlFlow::Continue
+		}));
 		s
 	}
 }
@@ -715,7 +772,7 @@ impl Module for MprisWidget {
 				}
 		}});
 
-		let player_by_name: Rc<RefCell<HashMap<String, Rc<RefCell<PlayerWidget>>>>> = Rc::new(RefCell::new(HashMap::new()));
+		let player_by_name: Rc<RefCell<HashMap<String, Rc<PlayerWidget>>>> = Rc::new(RefCell::new(HashMap::new()));
 
 		let dbus = Rc::new(RefCell::new(
 			bus_get_sync(waybar_cffi::gtk::gio::BusType::Session,
@@ -749,8 +806,8 @@ impl Module for MprisWidget {
 						if !name.starts_with("org.mpris.MediaPlayer2") { return; }
 						if name == "org.mpris.MediaPlayer2.playerctld" && !new_owner.is_empty() {
 							if let Some(player) = player_by_name.borrow().get(&new_owner) {
-								menu.borrow().remove(&player.borrow().root);
-								unsafe { player.borrow().root.destroy(); }
+								menu.borrow().remove(&player.root);
+								unsafe { player.root.destroy(); }
 								player_by_name.borrow_mut().remove(&new_owner);
 							}
 							playerctld_owner.replace(Some(new_owner));
@@ -760,8 +817,8 @@ impl Module for MprisWidget {
 							// dead player
 							if let Some(player) = player_by_name.borrow().get(&old_owner) {
 								println!("killing {}", name);
-								menu.borrow().remove(&player.borrow().root);
-								unsafe { player.borrow().root.destroy(); }
+								menu.borrow().remove(&player.root);
+								unsafe { player.root.destroy(); }
 							}
 							player_by_name.borrow_mut().remove(&old_owner);
 						}
@@ -770,7 +827,7 @@ impl Module for MprisWidget {
 							// new player
 							println!("new {} at {}", name, new_owner);
 							let player = PlayerWidget::new(dbus.clone(), new_owner.clone()).initialize();
-							menu.borrow().add(&player.borrow().root);
+							menu.borrow().add(&player.root);
 							player_by_name.borrow_mut().insert(new_owner, player);
 						}
 					}
@@ -794,13 +851,13 @@ impl Module for MprisWidget {
 						if playerctld_owner.borrow().as_ref().is_some_and(|s| { s == sender }) { return; }
 						println!("revived {}", sender);
 						let player = PlayerWidget::new(dbus.clone(), sender.to_string()).initialize();
-						menu.borrow().add(&player.borrow().root);
+						menu.borrow().add(&player.root);
 						player_by_name.borrow_mut().insert(sender.to_string(), player);
 					}
 					let map = player_by_name.borrow();
 					let player = map.get(sender).unwrap();
 					let (position,) = params.get::<(i64,)>().expect("Failed to unpack Seeked");
-					player.borrow_mut().update_seek(position);
+					player.update_seek(position);
 				}
 		});
 
@@ -821,7 +878,7 @@ impl Module for MprisWidget {
 						if playerctld_owner.borrow().as_ref().is_some_and(|s| { s == sender }) { return; }
 						println!("revived {}", sender);
 						let player = PlayerWidget::new(dbus.clone(), sender.to_string()).initialize();
-						menu.borrow().add(&player.borrow().root);
+						menu.borrow().add(&player.root);
 						player_by_name.borrow_mut().insert(sender.to_string(), player);
 					}
 					let map = player_by_name.borrow();
@@ -830,7 +887,7 @@ impl Module for MprisWidget {
 					for el in changed_props.end().iter() {
 						let k = el.child_get::<String>(0);
 						let v = el.child_get::<Variant>(1);
-						player.borrow_mut().update_prop(&k, v);
+						player.update_prop(&k, v);
 					}
 				}
 		});
