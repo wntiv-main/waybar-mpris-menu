@@ -48,17 +48,22 @@ impl PlayerManager {
 		return self.player_by_name.borrow().contains_key(name);
 	}
 
-	pub fn new(dbus_conn: DBusConnection, player_list_widget: GtkBox) -> Rc<Self> {
-		let playerctld_owner = RefCell::new(dbus_conn.call_sync(
+	fn dbus_get_name_owner(dbus_conn: &DBusConnection, name: &str) -> Option<String> {
+		dbus_conn.call_sync(
 			Some("org.freedesktop.DBus"),
 			"/org/freedesktop/DBus",
 			"org.freedesktop.DBus",
 			"GetNameOwner",
-			Some(&Variant::from(("org.mpris.MediaPlayer2.playerctld",))),
+			Some(&Variant::from((name,))),
 			Some(VariantTy::TUPLE),
 			DBusCallFlags::NONE,
 			3000, None::<&Cancellable>)
-			.map_or(None, |v| { v.get::<(String,)>().map(|t| { t.0 }) }));
+			.map_or(None, |v| { v.get::<(String,)>().map(|t| { t.0 }) })
+	}
+
+	pub fn new(dbus_conn: DBusConnection, player_list_widget: GtkBox) -> Rc<Self> {
+		let playerctld_owner = RefCell::new(
+			Self::dbus_get_name_owner(&dbus_conn, "org.mpris.MediaPlayer2.playerctld"));
 		PlayerManager {
 			dbus_conn,
 			player_by_name: RefCell::new(HashMap::new()),
@@ -152,6 +157,29 @@ impl PlayerManager {
 		slf
 	}
 
+	pub fn probe_initial_players(slf: &Rc<Self>) {
+		let names = slf.dbus_conn.call_sync(
+			Some("org.freedesktop.DBus"),
+			"/org/freedesktop/DBus",
+			"org.freedesktop.DBus",
+			"ListNames",
+			None,
+			Some(VariantTy::TUPLE),
+			DBusCallFlags::NONE,
+			3000,
+			None::<&Cancellable>)
+			.expect("Could not probe DBus for MPRIS players")
+			.child_get::<Vec<String>>(0);
+		for name in &names {
+			if !name.starts_with("org.mpris.MediaPlayer2")
+				|| name == "org.mpris.MediaPlayer2.playerctld" { continue; }
+			let bus_name = Self::dbus_get_name_owner(&slf.dbus_conn, name);
+			if let Some(bus_name) = bus_name {
+				Self::add_player(slf, bus_name);
+			}
+		}
+	}
+
 	pub fn get_all_player_data(&self, name: &str) -> Result<Variant, glib::Error> {
 		self.dbus_conn.call_sync(
 			Some(name),
@@ -188,7 +216,7 @@ impl PlayerManager {
 			Some(&Variant::from(("org.mpris.MediaPlayer2.Player", field))),
 			None,
 			DBusCallFlags::NONE,
-			-1,
+			5000,
 			None::<&Cancellable>)
 	}
 

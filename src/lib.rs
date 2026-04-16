@@ -19,7 +19,7 @@ mod player_manager;
 use crate::player_manager::PlayerManager;
 
 struct MprisWidget {
-	player_manager: Rc<PlayerManager>,
+	_player_manager: Rc<PlayerManager>,
 }
 
 impl Module for MprisWidget {
@@ -99,8 +99,9 @@ impl Module for MprisWidget {
 			None::<&Cancellable>).expect("Could not connect to D-Bus");
 
 		let player_manager = PlayerManager::new(dbus, menu);
+		PlayerManager::probe_initial_players(&player_manager);
 
-		MprisWidget { player_manager }
+		MprisWidget { _player_manager: player_manager }
 	}
 }
 
