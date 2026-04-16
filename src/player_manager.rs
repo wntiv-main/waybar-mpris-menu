@@ -34,10 +34,8 @@ impl PlayerManager {
 		if let Some(player) = self.player_by_name.borrow().get(name) {
 			self.player_list_widget.remove(player.get_root());
 			unsafe { player.get_root().destroy(); }
-			self.player_by_name.borrow_mut().remove(name);
-			return true;
 		}
-		false
+		self.player_by_name.borrow_mut().remove(name).is_some()
 	}
 
 	pub fn get_player(&self, name: &str) -> Option<Rc<PlayerWidget>> {
