@@ -59,7 +59,7 @@ pub struct PlayerWidget {
 	root: GtkBox,
 	title: Label,
 	album_artist: Label,
-	album_cover: Rc<RefCell<Image>>,
+	album_cover: Image,
 	shuf: ToggleButton,
 	prev: Button,
 	play_pause: Button,
@@ -261,7 +261,7 @@ impl PlayerWidget {
 		}
 	}
 
-	async fn set_art(album_cover: Rc<RefCell<Image>>, art_url: String) {
+	async fn set_art(album_cover: Image, art_url: String) {
 		let pixbuf = async {
 			let session = soup::Session::new();
 			let message = soup::Message::new("GET", &art_url).unwrap();
@@ -285,7 +285,7 @@ impl PlayerWidget {
 				}).flatten()
 		}.await;
 		if let Some(data) = pixbuf {
-			album_cover.borrow().set_from_pixbuf(Some(&data));
+			album_cover.set_from_pixbuf(Some(&data));
 		}
 	}
 
@@ -475,7 +475,7 @@ impl PlayerWidget {
 			root,
 			title,
 			album_artist,
-			album_cover: Rc::new(RefCell::new(album_cover)),
+			album_cover: album_cover,
 			shuf,
 			prev,
 			play_pause,
