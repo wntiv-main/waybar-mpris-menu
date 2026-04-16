@@ -6,16 +6,16 @@ use waybar_cffi::{
 	gtk::{
 		Adjustment, Box as GtkBox, Button, Image, Label, Scale, ToggleButton,
 		gdk_pixbuf::Pixbuf,
-		gio::{Cancellable, DBusCallFlags, DBusConnection, MemoryInputStream},
+		gio::{MemoryInputStream},
 		glib::{self, MainContext, Variant, VariantDict, VariantTy, clone::Downgrade, variant::ObjectPath},
 		prelude::WidgetExtManual,
 		traits::{AdjustmentExt, ButtonExt, ContainerExt, ImageExt, LabelExt, RangeExt, ScaleExt, ToggleButtonExt, WidgetExt}
 	},
 };
 
-use crate::player_model::{ PlayState, LoopState };
+use crate::{player_manager::PlayerManager, player_model::{ LoopState, PlayState }};
 
-pub struct PlayerData {
+struct PlayerData {
 	current_track: Option<ObjectPath>,
 	art_url: Option<String>,
 
@@ -47,7 +47,7 @@ pub struct PlayerData {
 }
 
 pub struct PlayerWidget {
-	dbus_conn: Weak<RefCell<DBusConnection>>,
+	manager: Weak<PlayerManager>,
 	name: String,
 	
 	data: Rc<RefCell<PlayerData>>,
@@ -56,7 +56,7 @@ pub struct PlayerWidget {
 	volume_adj: Adjustment,
 	rate_adj: Adjustment,
 
-	pub root: GtkBox,
+	root: GtkBox,
 	title: Label,
 	album_artist: Label,
 	album_cover: Rc<RefCell<Image>>,
@@ -71,6 +71,10 @@ pub struct PlayerWidget {
 }
 
 impl PlayerWidget {
+	pub fn get_root<'a>(&'a self) -> &'a GtkBox {
+		return &self.root
+	}
+
 	fn update_sensitivity(&self) {
 		let data = self.data.borrow();
 		self.play_pause.set_sensitive(data.can_control && (
@@ -286,69 +290,65 @@ impl PlayerWidget {
 	}
 
 	fn call_fn(&self, method: &str, params: Option<&Variant>) {
-		self.dbus_conn.upgrade().map(|p| {
-			p.borrow().call(
-				Some(&self.name),
-				"/org/mpris/MediaPlayer2",
-				"org.mpris.MediaPlayer2.Player",
+		self.manager.upgrade().inspect(|pm| {
+			let cb: Box<dyn FnOnce(Result<Variant, glib::Error>)> = if cfg!(debug_assertions) {
+				let name = self.name.to_string();
+				let method = method.to_string();
+				let params_str = params.map_or("".to_string(), |p| {
+					p.print(true).to_string()
+				});
+				Box::new(move |res| {
+					let _ = res.inspect_err(move |e| {
+						eprintln!("Error calling {}({}) as {}: {}", method, params_str, name, e);
+					});
+				})
+			} else {Box::new(|_res| {})};
+			pm.call_player_fn(
+				&self.name,
 				method,
 				params,
-				None,
-				DBusCallFlags::NONE,
-				-1,
-				None::<&Cancellable>,
-				|res| { let _ = res.map_err(|e| { eprintln!("dbus error {}", e) }); });
-		});
-	}
-
-	fn set_prop(&self, field: &str, value: &Variant) {
-		self.dbus_conn.upgrade().map(|p| {
-			p.borrow().call(
-				Some(&self.name),
-				"/org/mpris/MediaPlayer2",
-				"org.freedesktop.DBus.Properties",
-				"Set",
-				Some(&Variant::from(("org.mpris.MediaPlayer2.Player", field, value.to_variant()))),
-				None,
-				DBusCallFlags::NONE,
-				-1,
-				None::<&Cancellable>,
-				|res| {
-					let _ = res.map_err(|e| { eprintln!("dbus err on {}", e) });
-				});
+				cb);
 		});
 	}
 
 	fn get_prop(&self, field: &str) -> Option<Variant> {
-		self.dbus_conn.upgrade().map(|p| {
-			p.borrow().call_sync(
-				Some(&self.name),
-				"/org/mpris/MediaPlayer2",
-				"org.freedesktop.DBus.Properties",
-				"Get",
-				Some(&Variant::from(("org.mpris.MediaPlayer2.Player", field))),
-				Some(VariantTy::TUPLE),
-				DBusCallFlags::NONE,
-				-1,
-				None::<&Cancellable>)
-				.map_err(|e| { eprintln!("dbus err {}", e) }).ok()
-				.map(|vt| { vt.child_get(0) })
+		self.manager.upgrade().map(|pm| {
+			match pm.get_player_prop(&self.name, field) {
+				Ok(vt) => { Some(vt.child_get(0)) }
+				Err(error) => {
+					if cfg!(debug_assertions) {
+						eprintln!("Error getting {} from {}: {}", field, self.name, error);
+					}
+					None
+				}
+			}
 		}).flatten()
 	}
 
+	fn set_prop(&self, field: &str, value: &Variant) {
+		self.manager.upgrade().map(|pm| {
+			let cb: Box<dyn FnOnce(Result<Variant, glib::Error>)> = if cfg!(debug_assertions) {
+				let name = self.name.to_string();
+				let field = field.to_string();
+				let value_str = value.print(true).to_string();
+				Box::new(move |res| {
+					let _ = res.inspect_err(move |e| {
+						eprintln!("Error setting {} to {} on {}: {}", field, value_str, name, e);
+					});
+				})
+			} else {Box::new(|_res| {})};
+			pm.set_player_prop(
+				&self.name,
+				field,
+				value,
+				cb);
+		});
+	}
+
 	// Need to return an Rc because we need to hold weak references to most our fields for callbacks
-	pub fn new(conn: Rc<RefCell<DBusConnection>>, inst_name: String) -> Rc<Self> {
+	pub fn new(manager: &Rc<PlayerManager>, inst_name: String) -> Result<Rc<Self>, glib::Error> {
 		// Initial state
-		let resp = conn.borrow().call_sync(
-			Some(&inst_name),
-			"/org/mpris/MediaPlayer2",
-			"org.freedesktop.DBus.Properties",
-			"GetAll",
-			Some(&Variant::from(("org.mpris.MediaPlayer2.Player",))),
-			Some(VariantTy::TUPLE),
-			DBusCallFlags::NONE,
-			-1,
-			None::<&Cancellable>).expect("Could not access properties");
+		let resp = manager.get_all_player_data(&inst_name)?;
 		let props = VariantDict::from(resp.child_value(0));
 		let meta_props = props.lookup_value("Metadata", Some(&VariantTy::VARDICT))
 			.map(VariantDict::from);
@@ -427,7 +427,7 @@ impl PlayerWidget {
 
 		root.show_all();
 		let result = PlayerWidget {
-			dbus_conn: conn.downgrade(),
+			manager: manager.downgrade(),
 			name: inst_name,
 
 			data: Rc::new(RefCell::new(PlayerData {
@@ -487,7 +487,7 @@ impl PlayerWidget {
 			rate_ctl,
 		};
 		meta_props.map(|m| { result.update_metadata(m) });
-		result.apply_event_listeners()
+		Ok(result.apply_event_listeners())
 	}
 
 	fn apply_event_listeners(self) -> Rc<Self> {
