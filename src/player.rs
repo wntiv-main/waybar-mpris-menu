@@ -352,8 +352,7 @@ impl PlayerWidget {
 		let props = VariantDict::from(resp.child_value(0));
 		let meta_props = props.lookup_value("Metadata", Some(&VariantTy::VARDICT))
 			.map(VariantDict::from);
-
-		let play_state = props.lookup_value("PlayStatus", Some(VariantTy::STRING))
+		let play_state: PlayState = props.lookup_value("PlaybackStatus", Some(VariantTy::STRING))
 			.map(|v| { v.get::<String>()?.as_str().try_into().ok() }).flatten().unwrap_or(PlayState::Stopped);
 		let loop_state = props.lookup_value("LoopStatus", Some(VariantTy::STRING))
 			.map(|v| { v.get::<String>()?.as_str().try_into().ok() }).flatten().unwrap_or(LoopState::None);
