@@ -1,7 +1,8 @@
-use std::{cell::RefCell, rc::{Rc, Weak}};
+use std::{cell::RefCell, i32, rc::{Rc, Weak}};
 
 use gdk::glib::{SignalHandlerId, clone};
 use soup::prelude::*;
+use url::Url;
 use waybar_cffi::{
 	gtk::{
 		Adjustment, Box as GtkBox, Button, Image, Label, Scale, ToggleButton,
@@ -262,28 +263,41 @@ impl PlayerWidget {
 	}
 
 	async fn set_art(album_cover: Image, art_url: String) {
-		let pixbuf = async {
+		let url = Url::parse(&art_url);
+		if let Err(error) = url {
+			eprintln!("Failed parsing url '{}': {}", art_url, error);
+			return;
+		}
+		let url = url.unwrap();
+		
+		let pixbuf = if let Ok(path) = url.to_file_path() {
+			if !path.is_file() {
+				eprintln!("Thumbnail at '{}' was not found", path.display());
+				return;
+			}
+			// TODO: in theory we shouldnt use from_file with untrusted data...
+			Pixbuf::from_file_at_scale(&path, i32::MAX, 64, true)
+				.inspect_err(|e| { eprintln!("Failed parsing image from '{}': {}", path.display(), e) }).ok()
+		} else {async {
 			let session = soup::Session::new();
-			let message = soup::Message::new("GET", &art_url).unwrap();
+			let message = soup::Message::new("GET", &art_url)
+				.inspect_err(|e| { eprintln!("Failed parsing url '{}': {}", art_url, e) }).ok()?;
 
-			// 2. Send the request and get the body bytes
-			// Note: Soup3's send_and_read_async returns glib::Bytes directly
 			let bytes = session
 				.send_and_read_future(&message, glib::Priority::DEFAULT)
-				.await
-				.ok()?;
+				.await.inspect_err(|e| { eprintln!("Failed reading from '{}': {}", art_url, e) }).ok()?;
 
-			// 3. Wrap bytes in a MemoryInputStream
 			let stream = MemoryInputStream::from_bytes(&bytes);
 
-			// 4. Load the Pixbuf from the stream
 			Pixbuf::from_stream_future(&stream).await
-				.ok().map(|p| {
+				.inspect_err(|e| { eprintln!("Failed parsing image from '{}': {}", art_url, e) }).ok()
+				.map(|p| {
 					let dest_height = 64;
 					let dest_width = p.width() * dest_height / p.height();
 					p.scale_simple(dest_width, dest_height, gdk::gdk_pixbuf::InterpType::Bilinear)
 				}).flatten()
-		}.await;
+		}.await};
+
 		if let Some(data) = pixbuf {
 			album_cover.set_from_pixbuf(Some(&data));
 		}
