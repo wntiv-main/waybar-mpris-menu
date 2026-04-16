@@ -27,8 +27,9 @@ impl Module for MprisWidget {
 
 	fn init(info: &waybar_cffi::InitInfo, _config: Self::Config) -> Self {
 		let container = info.get_root_widget();
-		let label = Button::with_label("Hello World");
-		container.add(&label);
+		let menu_btn = Button::with_label("Hello World");
+		menu_btn.set_widget_name("cffi-mpris-menu");
+		container.add(&menu_btn);
 		container.show_all();
 
 		let menu = GtkBox::new(waybar_cffi::gtk::Orientation::Vertical, 0);
@@ -39,15 +40,15 @@ impl Module for MprisWidget {
 			.child(&menu)
 			.decorated(false)
 			.type_hint(waybar_cffi::gtk::gdk::WindowTypeHint::PopupMenu)
-			.attached_to(&label)
+			.attached_to(&menu_btn)
 			.modal(false)
 			.resizable(false)
 			.can_focus(true)
 			.events(EventMask::FOCUS_CHANGE_MASK)
 			.build();
-		menu_container.connect_realize(clone!(@weak label => move |slf| {
-			let rect = label.allocation();
-			let (x, y) = label.translate_coordinates(&label.toplevel().unwrap(), 0, 0).unwrap();
+		menu_container.connect_realize(clone!(@weak menu_btn => move |slf| {
+			let rect = menu_btn.allocation();
+			let (x, y) = menu_btn.translate_coordinates(&menu_btn.toplevel().unwrap(), 0, 0).unwrap();
 			let rect = Rectangle::new(x, y, rect.width(), rect.height());
 			slf.window().expect("GdkWindow backend not available").move_to_rect(
 				&rect,
@@ -68,7 +69,7 @@ impl Module for MprisWidget {
 			waybar_cffi::gtk::glib::Propagation::Proceed
 		});
 
-		label.connect_size_allocate(clone!(@weak menu_container => move |slf, rect| {
+		menu_btn.connect_size_allocate(clone!(@weak menu_container => move |slf, rect| {
 			if let Some(win) = menu_container.window() {
 				if let Some((x, y)) = slf.translate_coordinates(
 						&slf.toplevel().unwrap(), 0, 0) {
@@ -82,7 +83,7 @@ impl Module for MprisWidget {
 			}
 		}));
 
-		label.connect_clicked(clone!(@weak menu_container => move |_label| {
+		menu_btn.connect_clicked(clone!(@weak menu_container => move |_label| {
 			if menu_container.is_visible() {
 				menu_container.hide();
 			} else {
