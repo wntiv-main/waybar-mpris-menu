@@ -17,15 +17,17 @@ pub struct PlayerManager {
 }
 
 impl PlayerManager {
-	fn add_player(slf: &Rc<Self>, name: String) {
+	fn add_player(slf: &Rc<Self>, name: String) -> Result<(), glib::Error> {
 		let player = PlayerWidget::new(slf, name.clone());
 		match player {
 			Ok(player) => {
 				slf.player_list_widget.add(player.get_root());
 				slf.player_by_name.borrow_mut().insert(name, player);
+				Ok(())
 			}
 			Err(error) => {
 				eprintln!("Failed to create player: {}", error);
+				Err(error)
 			}
 		}
 	}
@@ -99,7 +101,7 @@ impl PlayerManager {
 					if old_owner.is_empty() {
 						if slf.have_player_by_name(&new_owner) { return; }
 						println!("new {} at {}", name, new_owner);
-						Self::add_player(&slf, new_owner);
+						let _ = Self::add_player(&slf, new_owner);
 					}
 				}
 			})
@@ -116,7 +118,7 @@ impl PlayerManager {
 				if !slf.have_player_by_name(sender) {
 					if slf.playerctld_owner.borrow().as_ref().is_some_and(|s| { s == sender }) { return; }
 					println!("revived {}", sender);
-					Self::add_player(&slf, sender.to_string());
+					if Self::add_player(&slf, sender.to_string()).is_err() { return; }
 				}
 				let player = slf.get_player(sender).unwrap();
 				if let Some((position,)) = params.get::<(i64,)>() {
@@ -138,7 +140,7 @@ impl PlayerManager {
 				if !slf.have_player_by_name(sender) {
 					if slf.playerctld_owner.borrow().as_ref().is_some_and(|s| { s == sender }) { return; }
 					println!("revived {}", sender);
-					Self::add_player(&slf, sender.to_string());
+					if Self::add_player(&slf, sender.to_string()).is_err() { return; }
 				}
 				let player = slf.get_player(sender).unwrap();
 				if let Some((_interface, changed_props, _invalid_props)) = params.get::<(String, VariantDict, Vec<String>)>(){
@@ -173,7 +175,7 @@ impl PlayerManager {
 				|| name == "org.mpris.MediaPlayer2.playerctld" { continue; }
 			let bus_name = Self::dbus_get_name_owner(&slf.dbus_conn, name);
 			if let Some(bus_name) = bus_name {
-				Self::add_player(slf, bus_name);
+				let _ = Self::add_player(slf, bus_name);
 			}
 		}
 	}
