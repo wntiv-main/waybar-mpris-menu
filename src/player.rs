@@ -586,11 +586,11 @@ impl PlayerWidget {
 					let position = s.get_prop("Position")
 						.map(|v| { v.get::<i64>() })
 						.flatten().unwrap_or(0);
-					data.position_base = now - ((position as f64 / rate) as i64);
+					data.position_base = now.wrapping_sub((position as f64 / rate) as i64);
 					data.clock_needs_aligned = false;
 					position
 				} else {
-					now - data.position_base
+					now.wrapping_sub(data.position_base)
 				}
 			};
 			s.playback_adj.set_value(position as f64 * rate);
