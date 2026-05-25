@@ -1,7 +1,7 @@
 use std::{cell::RefCell, i32, rc::{Rc, Weak}};
 
 use gdk::glib::{SignalHandlerId, clone};
-use soup::prelude::*;
+use soup::{prelude::*, uri_decode_data_uri};
 use url::Url;
 use waybar_cffi::{
 	gtk::{
@@ -278,6 +278,12 @@ impl PlayerWidget {
 			// TODO: in theory we shouldnt use from_file with untrusted data...
 			Pixbuf::from_file_at_scale(&path, i32::MAX, 64, true)
 				.inspect_err(|e| { eprintln!("Failed parsing image from '{}': {}", path.display(), e) }).ok()
+		} else if url.scheme() == "data" {
+			let bytes = uri_decode_data_uri(&art_url).0;
+			let stream = MemoryInputStream::from_bytes(&bytes);
+
+			Pixbuf::from_stream_at_scale_future(&stream, i32::MAX, 64, true).await
+				.inspect_err(|e| { eprintln!("Failed parsing image from '{}': {}", art_url, e) }).ok()
 		} else {async {
 			let session = soup::Session::new();
 			let message = soup::Message::new("GET", &art_url)
@@ -289,13 +295,8 @@ impl PlayerWidget {
 
 			let stream = MemoryInputStream::from_bytes(&bytes);
 
-			Pixbuf::from_stream_future(&stream).await
+			Pixbuf::from_stream_at_scale_future(&stream, i32::MAX, 64, true).await
 				.inspect_err(|e| { eprintln!("Failed parsing image from '{}': {}", art_url, e) }).ok()
-				.map(|p| {
-					let dest_height = 64;
-					let dest_width = p.width() * dest_height / p.height();
-					p.scale_simple(dest_width, dest_height, gdk::gdk_pixbuf::InterpType::Bilinear)
-				}).flatten()
 		}.await};
 
 		if let Some(data) = pixbuf {
