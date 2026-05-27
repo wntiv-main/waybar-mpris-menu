@@ -14,7 +14,8 @@ static DEFAULT_IGNORED_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 #[derive(serde::Deserialize)]
 pub struct Config {
 	ignored_players: Option<DeserialRegex>,
-	
+	max_title_length: Option<usize>,
+	max_subtitle_length: Option<usize>,
 }
 
 struct DeserialRegex(Regex);
@@ -48,4 +49,7 @@ impl Config {
 		self.ignored_players.as_ref()
 			.map_or_else(|| { &*DEFAULT_IGNORED_REGEX }, <&DeserialRegex>::into)
 	}
+
+	pub fn max_title_length(&self) -> usize { self.max_title_length.unwrap_or(50) }
+	pub fn max_subtitle_length(&self) -> usize { self.max_subtitle_length.unwrap_or(50) }
 }

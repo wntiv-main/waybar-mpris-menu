@@ -13,7 +13,12 @@ use waybar_cffi::{
 	},
 };
 
-use crate::{player_manager::PlayerManager, player_model::{ LoopState, PlayState }};
+use crate::{
+	config::Config,
+	player_manager::PlayerManager,
+	player_model::{ LoopState, PlayState },
+	str_utils::{truncate_str, truncate_string}
+};
 
 struct PlayerData {
 	current_track: Option<ObjectPath>,
@@ -75,6 +80,10 @@ impl PlayerWidget {
 		return &self.root
 	}
 
+	fn config<R, F: Fn(&Config) -> R>(&self, visitor: &F) -> R {
+		visitor(self.manager.upgrade().expect("Manager died before we did").config())
+	}
+
 	fn update_sensitivity(&self) {
 		let data = self.data.borrow();
 		self.play_pause.set_sensitive(data.can_control && (
@@ -95,7 +104,8 @@ impl PlayerWidget {
 
 		if let Some(title) = meta_props.lookup_value("xesam:title", Some(&VariantTy::STRING))
 				.map(|v| { v.get::<String>() }).flatten() {
-			self.title.set_label(&title);
+			self.title.set_label(&truncate_str(&title,
+				self.config(&Config::max_title_length)));
 		}
 		
 		let mut subtitle = String::new();
@@ -109,7 +119,8 @@ impl PlayerWidget {
 			if !subtitle.is_empty() { subtitle += " - "; }
 			subtitle += &artist.join(", ");
 		}
-		self.album_artist.set_label(&subtitle);
+		self.album_artist.set_label(&truncate_string(subtitle,
+			self.config(&Config::max_subtitle_length)));
 
 		if let Some(duration) = meta_props.lookup_value("mpris:length", Some(&VariantTy::INT64))
 				.map(|v| { v.get::<i64>() }).flatten() {

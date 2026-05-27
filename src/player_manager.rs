@@ -18,6 +18,10 @@ pub struct PlayerManager {
 }
 
 impl PlayerManager {
+	pub fn config<'a>(&'a self) -> &'a Config {
+		&self.config
+	}
+
 	fn add_player(slf: &Rc<Self>, name: String) -> Result<(), glib::Error> {
 		let player = PlayerWidget::new(slf, name.clone());
 		match player {

@@ -16,6 +16,7 @@ mod config;
 mod player;
 mod player_model;
 mod player_manager;
+mod str_utils;
 
 use crate::{config::Config, player_manager::PlayerManager};
 
