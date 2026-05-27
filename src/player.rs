@@ -7,7 +7,7 @@ use waybar_cffi::{
 		Adjustment, Box as GtkBox, Button, Image, Label, Scale, ToggleButton,
 		gdk_pixbuf::Pixbuf,
 		gio::{MemoryInputStream},
-		glib::{self, MainContext, SignalHandlerId, Variant, VariantDict, VariantTy, clone, clone::Downgrade, variant::ObjectPath},
+		glib::{self, MainContext, SignalHandlerId, Variant, VariantDict, VariantTy, clone, clone::Downgrade, variant::FromVariant, variant::ObjectPath},
 		prelude::WidgetExtManual,
 		traits::{AdjustmentExt, ButtonExt, ContainerExt, ImageExt, LabelExt, RangeExt, ScaleExt, ToggleButtonExt, WidgetExt}
 	},
@@ -370,6 +370,12 @@ impl PlayerWidget {
 		});
 	}
 
+
+	fn lookup_prop_value<T: FromVariant>(props: &VariantDict, key: &str, type_: &VariantTy, default: T) -> T {
+		props.lookup_value(key, Some(type_))
+			.map(|v| { v.get::<T>() }).flatten().unwrap_or(default)
+	}
+
 	// Need to return an Rc because we need to hold weak references to most our fields for callbacks
 	pub fn new(manager: &Rc<PlayerManager>, inst_name: String) -> Result<Rc<Self>, glib::Error> {
 		// Initial state
@@ -381,18 +387,12 @@ impl PlayerWidget {
 			.map(|v| { v.get::<String>()?.as_str().try_into().ok() }).flatten().unwrap_or(PlayState::Stopped);
 		let loop_state = props.lookup_value("LoopStatus", Some(VariantTy::STRING))
 			.map(|v| { v.get::<String>()?.as_str().try_into().ok() }).flatten().unwrap_or(LoopState::None);
-		let shuffle_state = props.lookup_value("Shuffle", Some(VariantTy::BOOLEAN))
-			.map_or(false, |v| { v.get::<bool>().unwrap_or(false) });
+		let shuffle_state = Self::lookup_prop_value(&props, "Shuffle", VariantTy::BOOLEAN, false);
 
-		let min_rate = props.lookup_value("MinimumRate", Some(VariantTy::DOUBLE))
-			.map_or(1., |v| { v.get::<f64>().unwrap_or(1.) });
-		let max_rate = props.lookup_value("MaximumRate", Some(VariantTy::DOUBLE))
-			.map_or(1., |v| { v.get::<f64>().unwrap_or(1.) }).min(4.);
-		let rate = props.lookup_value("Rate", Some(VariantTy::DOUBLE))
-			.map_or(1., |v| { v.get::<f64>().unwrap_or(1.) });
-
-		let volume = props.lookup_value("Volume", Some(VariantTy::DOUBLE))
-			.map_or(1., |v| { v.get::<f64>().unwrap_or(1.) });
+		let min_rate = Self::lookup_prop_value(&props, "MinimumRate", VariantTy::DOUBLE, 1.);
+		let max_rate = Self::lookup_prop_value(&props, "MaximumRate", VariantTy::DOUBLE, 1.).min(4.);
+		let rate = Self::lookup_prop_value(&props, "Rate", VariantTy::DOUBLE, 1.);
+		let volume = Self::lookup_prop_value(&props, "Volume", VariantTy::DOUBLE, 1.);
 
 		let root = GtkBox::new(waybar_cffi::gtk::Orientation::Vertical, 0);
 		let header = GtkBox::new(waybar_cffi::gtk::Orientation::Horizontal, 0);
@@ -480,18 +480,12 @@ impl PlayerWidget {
 				loop_sig_id: None,
 				shuf_sig_id: None,
 				
-				can_control: props.lookup_value("CanControl", Some(VariantTy::BOOLEAN))
-					.map_or(false, |v| { v.get::<bool>().unwrap_or(false) }),
-				can_seek: props.lookup_value("CanSeek", Some(VariantTy::BOOLEAN))
-					.map_or(false, |v| { v.get::<bool>().unwrap_or(false) }),
-				can_play: props.lookup_value("CanPlay", Some(VariantTy::BOOLEAN))
-					.map_or(false, |v| { v.get::<bool>().unwrap_or(false) }),
-				can_pause: props.lookup_value("CanPause", Some(VariantTy::BOOLEAN))
-					.map_or(false, |v| { v.get::<bool>().unwrap_or(false) }),
-				can_go_next: props.lookup_value("CanGoNext", Some(VariantTy::BOOLEAN))
-					.map_or(false, |v| { v.get::<bool>().unwrap_or(false) }),
-				can_go_prev: props.lookup_value("CanGoPrevious", Some(VariantTy::BOOLEAN))
-					.map_or(false, |v| { v.get::<bool>().unwrap_or(false) }),
+				can_control: Self::lookup_prop_value(&props, "CanControl", VariantTy::BOOLEAN, false),
+				can_seek: Self::lookup_prop_value(&props, "CanSeek", VariantTy::BOOLEAN, false),
+				can_play: Self::lookup_prop_value(&props, "CanPlay", VariantTy::BOOLEAN, false),
+				can_pause: Self::lookup_prop_value(&props, "CanPause", VariantTy::BOOLEAN, false),
+				can_go_next: Self::lookup_prop_value(&props, "CanGoNext", VariantTy::BOOLEAN, false),
+				can_go_prev: Self::lookup_prop_value(&props, "CanGoPrevious", VariantTy::BOOLEAN, false),
 			})),
 
 			playback_adj,
