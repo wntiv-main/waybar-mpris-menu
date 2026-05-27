@@ -1,6 +1,5 @@
 use std::{cell::RefCell, i32, rc::{Rc, Weak}};
 
-use gdk::glib::{SignalHandlerId, clone};
 use soup::{prelude::*, uri_decode_data_uri};
 use url::Url;
 use waybar_cffi::{
@@ -8,7 +7,7 @@ use waybar_cffi::{
 		Adjustment, Box as GtkBox, Button, Image, Label, Scale, ToggleButton,
 		gdk_pixbuf::Pixbuf,
 		gio::{MemoryInputStream},
-		glib::{self, MainContext, Variant, VariantDict, VariantTy, clone::Downgrade, variant::ObjectPath},
+		glib::{self, MainContext, SignalHandlerId, Variant, VariantDict, VariantTy, clone, clone::Downgrade, variant::ObjectPath},
 		prelude::WidgetExtManual,
 		traits::{AdjustmentExt, ButtonExt, ContainerExt, ImageExt, LabelExt, RangeExt, ScaleExt, ToggleButtonExt, WidgetExt}
 	},
@@ -386,6 +385,7 @@ impl PlayerWidget {
 
 		let root = GtkBox::new(waybar_cffi::gtk::Orientation::Vertical, 0);
 		let header = GtkBox::new(waybar_cffi::gtk::Orientation::Horizontal, 0);
+		header.set_hexpand(true);
 
 		// Metadata
 		let album_cover = Image::new();

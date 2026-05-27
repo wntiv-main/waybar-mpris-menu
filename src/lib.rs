@@ -9,14 +9,15 @@ use waybar_cffi::{
 		glib::{self, clone, Cast},
 		traits::{ButtonExt, ContainerExt, GtkWindowExt, WidgetExt}
 	},
-	serde, waybar_module
+	waybar_module
 };
 
+mod config;
 mod player;
 mod player_model;
 mod player_manager;
 
-use crate::player_manager::PlayerManager;
+use crate::{config::Config, player_manager::PlayerManager};
 
 struct MprisWidget {
 	_player_manager: Rc<PlayerManager>,
@@ -25,7 +26,7 @@ struct MprisWidget {
 impl Module for MprisWidget {
 	type Config = Config;
 
-	fn init(info: &waybar_cffi::InitInfo, _config: Self::Config) -> Self {
+	fn init(info: &waybar_cffi::InitInfo, config: Self::Config) -> Self {
 		let container = info.get_root_widget();
 		let menu_btn = Button::with_label("Hello World");
 		menu_btn.set_widget_name("cffi-mpris-menu");
@@ -99,7 +100,7 @@ impl Module for MprisWidget {
 		let dbus = bus_get_sync(waybar_cffi::gtk::gio::BusType::Session,
 			None::<&Cancellable>).expect("Could not connect to D-Bus");
 
-		let player_manager = PlayerManager::new(dbus, menu);
+		let player_manager = PlayerManager::new(dbus, menu, config);
 		PlayerManager::probe_initial_players(&player_manager);
 
 		MprisWidget { _player_manager: player_manager }
@@ -107,7 +108,3 @@ impl Module for MprisWidget {
 }
 
 waybar_module!(MprisWidget);
-
-#[derive(serde::Deserialize)]
-struct Config {
-}

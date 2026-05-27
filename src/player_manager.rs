@@ -7,13 +7,14 @@ use waybar_cffi::gtk::{
 	prelude::WidgetExtManual, traits::ContainerExt
 };
 
-use crate::player::PlayerWidget;
+use crate::{config::Config, player::PlayerWidget};
 
 pub struct PlayerManager {
 	dbus_conn: DBusConnection,
+	config: Config,
+	ignored_players: RefCell<HashMap<String, String>>,
 	player_by_name: RefCell<HashMap<String, Rc<PlayerWidget>>>,
 	player_list_widget: GtkBox,
-	playerctld_owner: RefCell<Option<String>>,
 }
 
 impl PlayerManager {
@@ -61,14 +62,13 @@ impl PlayerManager {
 			.map_or(None, |v| { v.get::<(String,)>().map(|t| { t.0 }) })
 	}
 
-	pub fn new(dbus_conn: DBusConnection, player_list_widget: GtkBox) -> Rc<Self> {
-		let playerctld_owner = RefCell::new(
-			Self::dbus_get_name_owner(&dbus_conn, "org.mpris.MediaPlayer2.playerctld"));
+	pub fn new(dbus_conn: DBusConnection, player_list_widget: GtkBox, config: Config) -> Rc<Self> {
 		PlayerManager {
 			dbus_conn,
+			config,
+			ignored_players: RefCell::new(HashMap::new()),
 			player_by_name: RefCell::new(HashMap::new()),
 			player_list_widget,
-			playerctld_owner,
 		}.attach_listeners()
 	}
 
@@ -85,9 +85,14 @@ impl PlayerManager {
 			clone!(@weak slf => move |_conn, _sender, _path, _interface, _signal, params| {
 				if let Some((name, old_owner, new_owner)) = params.get::<(String, String, String)>() {
 					if !name.starts_with("org.mpris.MediaPlayer2") { return; }
-					if name == "org.mpris.MediaPlayer2.playerctld" && !new_owner.is_empty() {
-						slf.remove_player(&new_owner);
-						slf.playerctld_owner.replace(Some(new_owner));
+					if slf.config.ignored_players().is_match(&name) {
+						if !old_owner.is_empty() {
+							slf.ignored_players.borrow_mut().remove(&old_owner);
+						}
+						if !new_owner.is_empty() {
+							slf.remove_player(&new_owner);
+							slf.ignored_players.borrow_mut().insert(new_owner, name);
+						}
 						return;
 					}
 					if new_owner.is_empty() {
@@ -116,7 +121,7 @@ impl PlayerManager {
 			DBusSignalFlags::NONE,
 			clone!(@weak slf => move |_conn, sender, _path, _interface, _signal, params| {
 				if !slf.have_player_by_name(sender) {
-					if slf.playerctld_owner.borrow().as_ref().is_some_and(|s| { s == sender }) { return; }
+					if slf.ignored_players.borrow().contains_key(sender) { return; }
 					println!("revived {}", sender);
 					if Self::add_player(&slf, sender.to_string()).is_err() { return; }
 				}
@@ -138,7 +143,7 @@ impl PlayerManager {
 			DBusSignalFlags::NONE,
 			clone!(@weak slf => move |_conn, sender, _path, _interface, _signal, params| {
 				if !slf.have_player_by_name(sender) {
-					if slf.playerctld_owner.borrow().as_ref().is_some_and(|s| { s == sender }) { return; }
+					if slf.ignored_players.borrow().contains_key(sender) { return; }
 					println!("revived {}", sender);
 					if Self::add_player(&slf, sender.to_string()).is_err() { return; }
 				}
@@ -170,11 +175,14 @@ impl PlayerManager {
 			None::<&Cancellable>)
 			.expect("Could not probe DBus for MPRIS players")
 			.child_get::<Vec<String>>(0);
-		for name in &names {
-			if !name.starts_with("org.mpris.MediaPlayer2")
-				|| name == "org.mpris.MediaPlayer2.playerctld" { continue; }
-			let bus_name = Self::dbus_get_name_owner(&slf.dbus_conn, name);
+		for name in names {
+			if !name.starts_with("org.mpris.MediaPlayer2") { continue; }
+			let bus_name = Self::dbus_get_name_owner(&slf.dbus_conn, &name);
 			if let Some(bus_name) = bus_name {
+				if slf.config.ignored_players().is_match(&name) {
+					slf.ignored_players.borrow_mut().insert(bus_name, name);
+					continue;
+				}
 				let _ = Self::add_player(slf, bus_name);
 			}
 		}
