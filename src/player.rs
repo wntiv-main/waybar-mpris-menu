@@ -586,7 +586,9 @@ impl PlayerWidget {
 			let rate = s.data.borrow().rate;
 			let position = {
 				let mut data = s.data.borrow_mut();
-				if data.is_dragging_playback || data.play_state != PlayState::Playing { return glib::ControlFlow::Continue; }
+				if data.is_dragging_playback || (!data.clock_needs_aligned
+						&& data.play_state != PlayState::Playing) {
+					return glib::ControlFlow::Continue; }
 				let now = fc.frame_time();
 				if data.clock_needs_aligned {
 					let position = s.get_prop("Position")
