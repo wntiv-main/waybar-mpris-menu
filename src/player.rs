@@ -385,11 +385,11 @@ impl PlayerWidget {
 
 		let root = GtkBox::new(waybar_cffi::gtk::Orientation::Vertical, 0);
 		let header = GtkBox::new(waybar_cffi::gtk::Orientation::Horizontal, 0);
-		header.set_hexpand(true);
 
 		// Metadata
 		let album_cover = Image::new();
 		let info = GtkBox::new(waybar_cffi::gtk::Orientation::Vertical, 0);
+		info.set_hexpand(true);
 		let title = Label::new(None);
 		let album_artist = Label::new(None);
 
