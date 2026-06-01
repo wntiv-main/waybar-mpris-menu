@@ -7,7 +7,7 @@ use waybar_cffi::gtk::{
 	prelude::WidgetExtManual, traits::ContainerExt
 };
 
-use crate::{config::Config, player::PlayerWidget};
+use crate::{config::Config, player::PlayerWidget, player_model::PlayerInterface};
 
 pub struct PlayerManager {
 	dbus_conn: DBusConnection,
@@ -84,7 +84,7 @@ impl PlayerManager {
 			Some("org.freedesktop.DBus"),
 			Some("NameOwnerChanged"),
 			Some("/org/freedesktop/DBus"),
-			Some("org.mpris.MediaPlayer2"),
+			Some(PlayerInterface::Root.into()),
 			DBusSignalFlags::MATCH_ARG0_NAMESPACE,
 			clone!(@weak slf => move |_conn, _sender, _path, _interface, _signal, params| {
 				if let Some((name, old_owner, new_owner)) = params.get::<(String, String, String)>() {
@@ -118,7 +118,7 @@ impl PlayerManager {
 
 		slf.dbus_conn.signal_subscribe(
 			None,
-			Some("org.mpris.MediaPlayer2.Player"),
+			Some(PlayerInterface::Player.into()),
 			Some("Seeked"),
 			Some("/org/mpris/MediaPlayer2"),
 			None,
@@ -152,11 +152,13 @@ impl PlayerManager {
 					if Self::add_player(&slf, sender.to_string()).is_err() { return; }
 				}
 				let player = slf.get_player(sender).unwrap();
-				if let Some((_interface, changed_props, _invalid_props)) = params.get::<(String, VariantDict, Vec<String>)>(){
-					for el in changed_props.end().iter() {
-						let k = el.child_get::<String>(0);
-						let v = el.child_get::<Variant>(1);
-						player.update_prop(&k, v);
+				if let Some((interface, changed_props, _invalid_props)) = params.get::<(String, VariantDict, Vec<String>)>(){
+					if let Ok(iface) = PlayerInterface::try_from(interface.as_str()) {
+						for el in changed_props.end().iter() {
+							let k = el.child_get::<String>(0);
+							let v = el.child_get::<Variant>(1);
+							player.update_prop(iface, &k, v);
+						}
 					}
 				} else {
 					eprintln!("Unexpected arguments to PropertiesChanged signal: {}", params.print(true).as_str());
@@ -192,24 +194,26 @@ impl PlayerManager {
 		}
 	}
 
-	pub fn get_all_player_data(&self, name: &str) -> Result<Variant, glib::Error> {
-		self.dbus_conn.call_sync(
+	pub fn get_all_player_data(&self, name: &str, interface: PlayerInterface) -> Result<VariantDict, glib::Error> {
+		Ok(VariantDict::from(self.dbus_conn.call_sync(
 			Some(name),
 			"/org/mpris/MediaPlayer2",
 			"org.freedesktop.DBus.Properties",
 			"GetAll",
-			Some(&Variant::from(("org.mpris.MediaPlayer2.Player",))),
+			Some(&Variant::from((Into::<&str>::into(interface),))),
 			Some(VariantTy::TUPLE),
 			DBusCallFlags::NONE,
 			3000,
-			None::<&Cancellable>)
+			None::<&Cancellable>)?.child_value(0)))
 	}
 
-	pub fn call_player_fn<T: FnOnce(Result<glib::Variant, glib::Error>) + 'static>(&self, name: &str, method: &str, params: Option<&Variant>, cb: T) {
+	pub fn call_player_fn<T: FnOnce(Result<glib::Variant, glib::Error>) + 'static>(
+			&self, name: &str, interface: PlayerInterface, method: &str,
+			params: Option<&Variant>, cb: T) {
 		self.dbus_conn.call(
 			Some(name),
 			"/org/mpris/MediaPlayer2",
-			"org.mpris.MediaPlayer2.Player",
+			interface.into(),
 			method,
 			params,
 			None,
@@ -219,26 +223,28 @@ impl PlayerManager {
 			cb);
 	}
 
-	pub fn get_player_prop(&self, name: &str, field: &str) -> Result<Variant, glib::Error> {
+	pub fn get_player_prop(&self, name: &str, interface: PlayerInterface, field: &str) -> Result<Variant, glib::Error> {
 		self.dbus_conn.call_sync(
 			Some(name),
 			"/org/mpris/MediaPlayer2",
 			"org.freedesktop.DBus.Properties",
 			"Get",
-			Some(&Variant::from(("org.mpris.MediaPlayer2.Player", field))),
+			Some(&Variant::from((Into::<&str>::into(interface), field))),
 			None,
 			DBusCallFlags::NONE,
 			5000,
 			None::<&Cancellable>)
 	}
 
-	pub fn set_player_prop<T: FnOnce(Result<glib::Variant, glib::Error>) + 'static>(&self, name: &str, field: &str, value: &Variant, cb: T) {
+	pub fn set_player_prop<T: FnOnce(Result<glib::Variant, glib::Error>) + 'static>(
+			&self, name: &str, interface: PlayerInterface,
+			field: &str, value: &Variant, cb: T) {
 		self.dbus_conn.call(
 			Some(name),
 			"/org/mpris/MediaPlayer2",
 			"org.freedesktop.DBus.Properties",
 			"Set",
-			Some(&Variant::from(("org.mpris.MediaPlayer2.Player", field, value.to_variant()))),
+			Some(&Variant::from((Into::<&str>::into(interface), field, value.to_variant()))),
 			None,
 			DBusCallFlags::NONE,
 			-1,

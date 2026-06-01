@@ -24,13 +24,13 @@ impl PlayState {
 }
 
 impl Into<&str> for PlayState {
-    fn into(self) -> &'static str {
-        match self {
+	fn into(self) -> &'static str {
+		match self {
 			Self::Stopped => "Stopped",
 			Self::Playing => "Playing",
 			Self::Paused => "Paused",
 		}
-    }
+	}
 }
 
 impl TryFrom<&str> for PlayState {
@@ -76,13 +76,13 @@ impl LoopState {
 }
 
 impl Into<&str> for LoopState {
-    fn into(self) -> &'static str {
-        match self {
+	fn into(self) -> &'static str {
+		match self {
 			Self::None => "None",
 			Self::LoopSingle => "Track",
 			Self::LoopPlaylist => "Playlist",
 		}
-    }
+	}
 }
 
 impl TryFrom<&str> for LoopState {
@@ -97,3 +97,40 @@ impl TryFrom<&str> for LoopState {
 		}
 	}
 }
+
+#[derive(Clone, Copy)]
+pub enum PlayerInterface {
+	Root,
+	Player,
+	TrackList,
+	Playlists,
+	Ext,
+}
+
+impl Into<&str> for PlayerInterface {
+	fn into(self) -> &'static str {
+		match self {
+			PlayerInterface::Root => "org.mpris.MediaPlayer2",
+			PlayerInterface::Player => "org.mpris.MediaPlayer2.Player",
+			PlayerInterface::TrackList => "org.mpris.MediaPlayer2.TrackList",
+			PlayerInterface::Playlists => "org.mpris.MediaPlayer2.Playlists",
+			PlayerInterface::Ext => "com.github.wntiv.MediaPlayer2",
+		}
+	}
+}
+
+impl TryFrom<&str> for PlayerInterface {
+	type Error = ();
+
+	fn try_from(value: &str) -> Result<Self, ()> {
+		match value {
+			"org.mpris.MediaPlayer2" => Ok(Self::Root),
+			"org.mpris.MediaPlayer2.Player" => Ok(Self::Player),
+			"org.mpris.MediaPlayer2.TrackList" => Ok(Self::TrackList),
+			"org.mpris.MediaPlayer2.Playlists" => Ok(Self::Playlists),
+			"com.github.wntiv.MediaPlayer2" => Ok(Self::Ext),
+			_ => Err(())
+		}
+	}
+}
+
