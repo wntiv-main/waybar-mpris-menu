@@ -576,12 +576,11 @@ impl PlayerWidget {
 						std::ptr::null_mut(),
 						std::ptr::null_mut())) };
 				if let Some(token) = startup_notify_id {
-					eprintln!("raising with token {}", token);
 					self.call_fn(PlayerInterface::Ext, "Raise",
 						Some(&Variant::from((token.as_str(),))));
 					return;
-				} else { eprintln!("could not get token"); }
-			} else { eprintln!("could not get app launch context"); }
+				}
+			}
 		}
 		if data.can_raise {
 			self.call_fn(PlayerInterface::Root, "Raise", None);
